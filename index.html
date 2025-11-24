@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Binance Futures — Euphoric Stage Detector (USDT-Perps)</title>
+  <style>
+    body { font-family: Inter, system-ui, Arial; margin:16px; background:#0f172a; color:#e6eef8; }
+    h1{ font-size:20px; margin-bottom:8px }
+    .controls{ display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap }
+    label{ font-size:13px; color:#cbd5e1 }
+    input, select { padding:6px 8px; border-radius:6px; border:1px solid #273449; background:#071126; color:#e6eef8 }
+    table{ width:100%; border-collapse: collapse; margin-top:12px; }
+    th,td{ text-align:left; padding:8px; border-bottom:1px solid #112233; font-size:13px }
+    th{ color:#94a3b8; font-weight:600; background:#071526; position:sticky; top:0 }
+    .green{ color:#7ef1a1; font-weight:700 }
+    .red{ color:#ff9aa2; font-weight:700 }
+    .badge { padding:4px 8px; border-radius:999px; font-size:12px; background:#102233; color:#e6eef8; border:1px solid #183543 }
+    .eup{ background: linear-gradient(90deg,#0a6fff22,#00d09b22); color:#7ef1a1; font-weight:800; border:1px solid #0aa87a }
+    .small{ font-size:12px; color:#9fb0c9 }
+    .info{ margin-top:10px; color:#9fb0c9; font-size:13px }
+  </style>
+</head>
+<body>
+  <h1>Binance Futures — Euphoric Stage Detector (USDT Perps)</h1>
+
+  <div class="controls">
+    <label>
+      Min daily gain %:
+      <input id="minDailyGain" type="number" step="0.1" value="3" style="width:80px" />
+    </label>
+    <label>
+      Min 7d gain %:
+      <input id="min7dGain" type="number" step="0.1" value="7" style="width:80px" />
+    </label>
+    <label>
+      Funding threshold (decimal):
+      <input id="fundingThreshold" type="number" step="0.0001" value="0.001" style="width:100px" />
+    </label>
+    <label>
+      Top-N 24h gainers:
+      <input id="topN" type="number" value="10" style="width:60px" />
+    </label>
+
+    <label><input id="useProxy" type="checkbox" /> Use CORS proxy (for testing)</label>
+
+    <button id="runBtn">Run scan</button>
+    <div id="status" class="small" style="margin-left:12px">idle</div>
+  </div>
+
+  <div class="info">
+    This tool queries Binance USDⓈ-M Futures public endpoints to find PERPETUAL USDT pairs in the top-N 24h gainers,
+    calculates 7-day percentage change, fetches funding rate and open interest, and flags symbols that match
+    the configured "euphoric" rules.
+  </div>
+
+  <table id="results">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>24h %</th>
+        <th>7d %</th>
+        <th>Funding</th>
+        <th>Open Interest</th>
+        <th>Volume (24h)</th>
+        <th>Signals</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+  (async function(){
+    const $ = id => document.getElementById(id);
+    const runBtn = $('runBtn');
+    const status = $('status');
+    const resultsTbody = document.querySelector('#results tbody');
+
+    // Binance endpoints (USD-M futures)
+    const BASE = 'https://fapi.binance.com'; // official USD-M futures base
+    // optional proxy for browsers w/ CORS restrictions - set via checkbox
+    function apiUrl(path){
+      const useProxy = $('useProxy').checked;
+      const url = BASE + path;
+      if(!useProxy) return url;
+      // NOTE: public demo proxy (allorigins) is for quick testing only — consider your own proxy for production
+      return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+    }
+
+    function setStatus(s){ status.textContent = s; }
+
+    async function fetchJson(url, opts){
+      try{
+        const r = await fetch(url, opts);
+        if(!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
+        return await r.json();
+      }catch(e){
+        throw new Error('Fetch error: ' + e.message + ' (url: '+ url +')');
+      }
+    }
+
+    async function scan(){
+      // read thresholds
+      const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
+      const min7dGainPct = parseFloat($('min7dGain').value) || 7;
+      const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
+      const topN = parseInt($('topN').value) || 10;
+
+      resultsTbody.innerHTML = '';
+      setStatus('Fetching exchangeInfo (symbols) ...');
+      // 1) Get exchange info to identify PERPETUAL USDT symbols and status
+      const exchangeInfo = await fetchJson(apiUrl('/fapi/v1/exchangeInfo'));
+      const perpetualSet = new Set();
+      for(const s of exchangeInfo.symbols || []){
+        if(s.contractType === 'PERPETUAL' && s.symbol.endsWith('USDT') && s.status === 'TRADING'){
+          perpetualSet.add(s.symbol);
+        }
+      }
+
+      setStatus('Fetching 24h tickers ...');
+      // 2) Get 24hr tickers (all)
+      const tickers = await fetchJson(apiUrl('/fapi/v1/ticker/24hr'));
+
+      // filter to perpetual USDT symbols
+      const perps = (tickers || []).filter(t => perpetualSet.has(t.symbol));
+
+      // convert numeric values
+      for(const t of perps){
+        t.priceChangePercent = parseFloat(t.priceChangePercent);
+        t.lastPrice = parseFloat(t.lastPrice);
+        t.quoteVolume = parseFloat(t.quoteVolume);
+        t.volume = parseFloat(t.volume);
+      }
+
+      // 3) top-N gainers by 24h %
+      perps.sort((a,b) => b.priceChangePercent - a.priceChangePercent);
+      const topGainers = perps.slice(0, Math.max(topN, 10));
+
+      setStatus('Top ' + topGainers.length + ' gainers found. Fetching detail for each (klines, funding, open interest) ...');
+
+      // helper: wait between calls to avoid rate limits
+      const pause = ms => new Promise(r=>setTimeout(r,ms));
+
+      const rows = [];
+      for(let i=0;i<topGainers.length;i++){
+        const t = topGainers[i];
+        try{
+          // Klines for 7-day percent (daily)
+          // get 8 daily candles (today + 7 previous)
+          const klines = await fetchJson(apiUrl(`/fapi/v1/klines?symbol=${t.symbol}&interval=1d&limit=8`));
+          // klines: [ [openTime, open, high, low, close, ...], ... ]
+          let sevenDayPct = null;
+          if(klines && klines.length >= 2){
+            const closeNow = parseFloat(klines[klines.length-1][4]);
+            const close7ago = parseFloat(klines[0][4]); // oldest of the 8 -> 7 days ago
+            sevenDayPct = ((closeNow / close7ago) - 1) * 100;
+          }
+
+          // funding (mark price / funding rate)
+          const premium = await fetchJson(apiUrl(`/fapi/v1/premiumIndex?symbol=${t.symbol}`));
+          // premiumIndex result includes fields like lastFundingRate (or fundingRate) on some endpoints
+          const fundingRate = parseFloat(premium.lastFundingRate ?? premium.fundingRate ?? 0);
+
+          // open interest
+          const oi = await fetchJson(apiUrl(`/fapi/v1/openInterest?symbol=${t.symbol}`));
+          const openInterest = parseFloat(oi.openInterest || 0);
+
+          // open interest history recent (1d period, limit=2) to see direction
+          // Note: the futures openInterestHist endpoint is at /futures/data/openInterestHist
+          let oiHist = [];
+          try {
+            oiHist = await fetchJson(apiUrl(`/futures/data/openInterestHist?symbol=${t.symbol}&period=1d&limit=2`));
+          } catch(e){
+            // ignore if not available; we still have current OI
+          }
+          let oiChangePct = null;
+          if(oiHist && oiHist.length >= 2){
+            const latestOI = Number(oiHist[oiHist.length-1].sumOpenInterest || oiHist[oiHist.length-1].openInterest || 0);
+            const prevOI = Number(oiHist[oiHist.length-2].sumOpenInterest || oiHist[oiHist.length-2].openInterest || 0);
+            oiChangePct = prevOI ? ((latestOI / prevOI) -1) * 100 : null;
+          }
+
+          rows.push({
+            symbol: t.symbol,
+            pct24h: t.priceChangePercent,
+            pct7d: sevenDayPct,
+            fundingRate,
+            openInterest,
+            oiChangePct,
+            volume: t.quoteVolume
+          });
+
+        } catch(err){
+          console.warn('symbol error', t.symbol, err);
+          rows.push({ symbol: t.symbol, error: err.message });
+        }
+        // respectful pause to reduce chance of hitting rate-limits (tweak as needed)
+        await pause(120);
+        setStatus(`Fetched ${i+1} / ${topGainers.length}`);
+      }
+
+      // Determine relative 7d ranking among the set
+      const valid7d = rows.filter(r => typeof r.pct7d === 'number' && !isNaN(r.pct7d));
+      const sorted7d = [...valid7d].sort((a,b)=> b.pct7d - a.pct7d);
+
+      // Render table and compute euphoric flag
+      resultsTbody.innerHTML = '';
+      for(const r of rows){
+        const tr = document.createElement('tr');
+
+        const symTd = document.createElement('td');
+        symTd.innerHTML = `<div style="display:flex;gap:8px;align-items:center">
+          <div class="badge">${r.symbol}</div>
+          ${r.error ? `<div class="small" style="color:#ffa">Error: ${r.error}</div>` : ''}
+          </div>`;
+        tr.appendChild(symTd);
+
+        const pct24Td = document.createElement('td');
+        pct24Td.textContent = (typeof r.pct24h === 'number' ? r.pct24h.toFixed(2) + '%' : 'n/a');
+        if(r.pct24h > 0) pct24Td.className = 'green'; else pct24Td.className = 'red';
+        tr.appendChild(pct24Td);
+
+        const pct7Td = document.createElement('td');
+        pct7Td.textContent = (typeof r.pct7d === 'number' ? r.pct7d.toFixed(2) + '%' : 'n/a');
+        tr.appendChild(pct7Td);
+
+        const fundTd = document.createElement('td');
+        fundTd.textContent = (typeof r.fundingRate === 'number' ? Number(r.fundingRate).toFixed(6) : 'n/a');
+        tr.appendChild(fundTd);
+
+        const oiTd = document.createElement('td');
+        oiTd.textContent = (typeof r.openInterest === 'number' ? Number(r.openInterest).toLocaleString() : 'n/a') +
+                           (r.oiChangePct ? ` (Δ ${r.oiChangePct.toFixed(1)}%)` : '');
+        tr.appendChild(oiTd);
+
+        const volTd = document.createElement('td');
+        volTd.textContent = (r.volume ? Number(r.volume).toLocaleString() : 'n/a');
+        tr.appendChild(volTd);
+
+        // Signals cell - apply euphoric rules
+        const signals = [];
+        const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
+        const min7dGainPct = parseFloat($('min7dGain').value) || 7;
+        const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
+
+        if(typeof r.pct24h === 'number' && r.pct24h >= minDailyGainPct) signals.push('High 24h gain');
+        if(typeof r.pct7d === 'number' && r.pct7d >= min7dGainPct) signals.push('Strong 7d gain');
+        // 7d relative top among the top-N
+        const rank7 = r.pct7d ? (sorted7d.findIndex(x=>x.symbol===r.symbol) + 1) : null;
+        if(rank7 && rank7 <= Math.max(3, Math.ceil(valid7d.length * 0.3))) signals.push('Top 7d');
+
+        if(typeof r.fundingRate === 'number' && r.fundingRate >= fundingThreshold) signals.push('Funding +');
+        if(r.oiChangePct && r.oiChangePct > 3) signals.push('OI rising');
+
+        const sigTd = document.createElement('td');
+        sigTd.innerHTML = signals.length ? signals.map(s=>`<span class="badge">${s}</span>`).join(' ') : '<span class="small">—</span>';
+        tr.appendChild(sigTd);
+
+        // If it meets 3 or more of the signals, mark euphoric
+        if(signals.length >= 3){
+          tr.classList.add('eup');
+          // prepend EUP badge
+          sigTd.innerHTML = `<span class="badge eup">EUPHORIC</span> ` + sigTd.innerHTML;
+        }
+
+        resultsTbody.appendChild(tr);
+      }
+
+      setStatus('Scan complete — results shown. (Respect Binance rate limits; refresh manually)');
+    }
+
+    runBtn.addEventListener('click', async ()=>{
+      runBtn.disabled = true;
+      try{
+        await scan();
+      }catch(err){
+        setStatus('Error: ' + err.message);
+        console.error(err);
+      }finally{
+        runBtn.disabled = false;
+      }
+    });
+
+    // auto-run once on page load
+    // await scan(); // uncomment if you want auto-run
+
+  })();
+  </script>
+</body>
+</html>
