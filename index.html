@@ -282,9 +282,11 @@ async function updateTop10() {
         <td>${Number(r.openInterest).toLocaleString()}</td>
         <td>${Number(r.volume).toLocaleString()}</td>
         <td>
-          ${isEuphoric ? `<span class="badge eup">EUPHORIC</span>` : ""}
-          ${signals.map(s => `<span class="badge">${s}</span>`).join(" ")}
-        </td>
+  ${isEuphoric 
+     ? `<span class="badge eup">EUPHORIC</span>` 
+     : signals.map(s => `<span class="badge">${s}</span>`).join(" ")
+  }
+</td>
       `;
 
       tbody.appendChild(tr);
@@ -476,9 +478,11 @@ async function scan() {
       <td>${Number(r.openInterest).toLocaleString()}</td>
       <td>${Number(r.volume).toLocaleString()}</td>
       <td>
-        ${isEuphoric ? `<span class="badge eup">EUPHORIC</span> ` : ""}
-        ${signals.map(s => `<span class="badge">${s}</span>`).join(" ")}
-      </td>
+  ${isEuphoric 
+     ? `<span class="badge eup">EUPHORIC</span>` 
+     : signals.map(s => `<span class="badge">${s}</span>`).join(" ")
+  }
+</td>
     `;
 
     tbody.appendChild(tr);
