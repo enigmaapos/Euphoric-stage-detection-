@@ -172,35 +172,125 @@
       return data;
     }
 
-    // ------------------- AUTO REFRESH SYSTEM (GLOBAL) -------------------
-let autoRefresh = false;
-let autoTimer = null;
+    // ---------------- SMART TOP-10 UPDATE SYSTEM ----------------
+async function updateTop10() {
+  setStatus("Updating top 10…");
 
-function randomDelay(min = 20000, max = 35000) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
+  try {
+    // 1. Get all 24h tickers (1 lightweight call)
+    const tickers = await fetchJson(apiUrl('/fapi/v1/ticker/24hr'));
 
-function startAutoRefresh() {
-  if (autoRefresh) return;
-  autoRefresh = true;
-
-  async function loop() {
-    if (!autoRefresh) return;
-
-    try { 
-      await scan();  // uses cooldown internally 
-    } catch(e) {
-      console.warn("Auto-refresh scan error:", e);
+    // 2. Filter perpetual USDT pairs only
+    const exchangeInfo = await getExchangeInfo();
+    const perpetualSet = new Set();
+    for (const s of exchangeInfo.symbols || []) {
+      if (s.contractType === 'PERPETUAL' && s.symbol.endsWith('USDT') && s.status === 'TRADING') {
+        perpetualSet.add(s.symbol);
+      }
     }
 
-    autoTimer = setTimeout(loop, randomDelay());
+    const perps = tickers.filter(t => perpetualSet.has(t.symbol));
+
+    // 3. Convert important numeric values
+    for (const t of perps) {
+      t.priceChangePercent = parseFloat(t.priceChangePercent);
+      t.lastPrice = parseFloat(t.lastPrice);
+      t.quoteVolume = parseFloat(t.quoteVolume);
+      t.volume = parseFloat(t.volume);
+    }
+
+    // 4. Sort by 24h gain (DESCENDING) → REAL Top 10
+    perps.sort((a,b) => b.priceChangePercent - a.priceChangePercent);
+
+    const top10 = perps.slice(0, 10);
+
+    // 5. Fetch extra lightweight data for each top 10 symbol
+    const rows = [];
+    for (let i = 0; i < top10.length; i++) {
+      const t = top10[i];
+
+      await pauseJitter(280, 420); // safer + lighter than full scan
+
+      try {
+        // Funding
+        const premium = await fetchJson(apiUrl(`/fapi/v1/premiumIndex?symbol=${t.symbol}`));
+        const fundingRate = parseFloat(premium.lastFundingRate ?? premium.fundingRate ?? 0);
+
+        // OI
+        const oi = await fetchJson(apiUrl(`/fapi/v1/openInterest?symbol=${t.symbol}`));
+        const openInterest = parseFloat(oi.openInterest || 0);
+
+        // 7-day klines (light enough for top 10 only)
+        const klines = await fetchJson(apiUrl(`/fapi/v1/klines?symbol=${t.symbol}&interval=1d&limit=8`));
+        let sevenDayPct = null;
+        if (klines && klines.length >= 2) {
+          const closeNow = parseFloat(klines[klines.length-1][4]);
+          const close7ago = parseFloat(klines[0][4]);
+          sevenDayPct = ((closeNow / close7ago) - 1) * 100;
+        }
+
+        rows.push({
+          symbol: t.symbol,
+          pct24h: t.priceChangePercent,
+          pct7d: sevenDayPct,
+          fundingRate,
+          openInterest,
+          volume: t.quoteVolume
+        });
+      } catch (err) {
+        rows.push({ symbol: t.symbol, error: err.message });
+      }
+    }
+
+    // 6. Render into the table (ONLY update tbody)
+    const tbody = document.querySelector('#results tbody');
+    tbody.innerHTML = '';
+
+    for (const r of rows) {
+      const tr = document.createElement('tr');
+
+      tr.innerHTML = `
+        <td><div class="badge">${r.symbol}</div></td>
+        <td class="${r.pct24h >= 0 ? 'green' : 'red'}">${r.pct24h.toFixed(2)}%</td>
+        <td>${r.pct7d ? r.pct7d.toFixed(2) + '%' : 'n/a'}</td>
+        <td>${r.fundingRate.toFixed(6)}</td>
+        <td>${Number(r.openInterest).toLocaleString()}</td>
+        <td>${Number(r.volume).toLocaleString()}</td>
+        <td><span class="badge">Updated</span></td>
+      `;
+
+      tbody.appendChild(tr);
+    }
+
+    setStatus("Top 10 updated ✓");
+  } catch (e) {
+    console.warn("updateTop10 error:", e);
+    setStatus("Update error");
+  }
+}
+// ------------------------------------------------------------
+
+    // ------------------- AUTO REFRESH SYSTEM (GLOBAL) -------------------
+let autoRefreshEnabled = false;
+let autoTimer = null;
+
+function startAutoRefresh() {
+  if (autoRefreshEnabled) return;
+  autoRefreshEnabled = true;
+
+  async function loop() {
+    if (!autoRefreshEnabled) return;
+
+    await updateTop10(); // ✔ Only updates Top 10
+
+    autoTimer = setTimeout(loop, 15000 + Math.random() * 10000); // 15–25s
   }
 
   loop();
 }
 
 function stopAutoRefresh() {
-  autoRefresh = false;
+  autoRefreshEnabled = false;
   if (autoTimer) clearTimeout(autoTimer);
   autoTimer = null;
 }
