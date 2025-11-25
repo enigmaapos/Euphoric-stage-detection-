@@ -296,145 +296,169 @@ function stopAutoRefresh() {
 }
 // --------------------------------------------------------------------
 
-    // core scan function
-    async function scan(){
-      // enforce global cooldown
-      const now = Date.now();
-      if (now - lastScan < SCAN_COOLDOWN_MS) {
-        const wait = Math.ceil((SCAN_COOLDOWN_MS - (now - lastScan)) / 1000);
-        setStatus(`Cooldown active — wait ${wait}s`);
-        return;
-      }
-      lastScan = now;
 
-      // read thresholds
-      const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
-      const min7dGainPct = parseFloat($('min7dGain').value) || 7;
-      const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
-      let topN = parseInt($('topN').value) || 10;
-      if (topN < 1) topN = 1;
-      if (topN > 50) topN = 50; // safety cap
+  // core scan function
+async function scan() {
+  // enforce global cooldown
+  const now = Date.now();
+  if (now - lastScan < SCAN_COOLDOWN_MS) {
+    const wait = Math.ceil((SCAN_COOLDOWN_MS - (now - lastScan)) / 1000);
+    setStatus(`Cooldown active — wait ${wait}s`);
+    return;
+  }
+  lastScan = now;
 
-      resultsTbody.innerHTML = '';
-      setStatus('Fetching exchangeInfo ...');
-      const exchangeInfo = await getExchangeInfo();
-      const perpetualSet = new Set();
-      for (const s of exchangeInfo.symbols || []) {
-        if (s.contractType === 'PERPETUAL' && s.symbol.endsWith('USDT') && s.status === 'TRADING') {
-          perpetualSet.add(s.symbol);
-        }
-      }
+  // read thresholds ONCE (cleaner)
+  const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
+  const min7dGainPct = parseFloat($('min7dGain').value) || 7;
+  const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
+  let topN = parseInt($('topN').value) || 10;
 
-      setStatus('Fetching 24h tickers ...');
-      const tickers = await get24hTickers();
-      const perps = (tickers || []).filter(t => perpetualSet.has(t.symbol));
+  if (topN < 1) topN = 1;
+  if (topN > 50) topN = 50;
 
-      for (const t of perps) {
-        t.priceChangePercent = parseFloat(t.priceChangePercent);
-        t.lastPrice = parseFloat(t.lastPrice);
-        t.quoteVolume = parseFloat(t.quoteVolume);
-        t.volume = parseFloat(t.volume);
-      }
+  resultsTbody.innerHTML = '';
+  setStatus('Fetching exchangeInfo ...');
 
-      perps.sort((a,b) => b.priceChangePercent - a.priceChangePercent);
-      const topGainers = perps.slice(0, Math.max(topN, 10)); // keep at least 10 shown for user expectation
+  const exchangeInfo = await getExchangeInfo();
+  const perpetualSet = new Set();
 
-      setStatus(`Top ${topGainers.length} gainers found — fetching details (safe mode) ...`);
-
-      // For each top gainer, fetch klines (7d), premiumIndex (funding), openInterest
-      const rows = [];
-      for (let i = 0; i < topGainers.length; i++) {
-        const t = topGainers[i];
-        setStatus(`Fetching ${i+1}/${topGainers.length} — ${t.symbol}`);
-        try {
-          // Respectful jittered pause before per-symbol calls (reduces burst)
-          await pauseJitter(350, 550);
-
-          // 7-day klines: request 8 daily candles (today + 7 prev)
-          const klines = await fetchJson(apiUrl(`/fapi/v1/klines?symbol=${t.symbol}&interval=1d&limit=8`));
-          let sevenDayPct = null;
-          if (klines && klines.length >= 2) {
-            const closeNow = parseFloat(klines[klines.length-1][4]);
-            const close7ago = parseFloat(klines[0][4]);
-            sevenDayPct = ((closeNow / close7ago) - 1) * 100;
-          }
-
-          // funding (premiumIndex)
-          const premium = await fetchJson(apiUrl(`/fapi/v1/premiumIndex?symbol=${t.symbol}`));
-          const fundingRate = parseFloat(premium.lastFundingRate ?? premium.fundingRate ?? 0);
-
-          // open interest (current)
-          const oi = await fetchJson(apiUrl(`/fapi/v1/openInterest?symbol=${t.symbol}`));
-          const openInterest = parseFloat(oi.openInterest || 0);
-
-          rows.push({
-            symbol: t.symbol,
-            pct24h: t.priceChangePercent,
-            pct7d: sevenDayPct,
-            fundingRate,
-            openInterest,
-            volume: t.quoteVolume
-          });
-        } catch (err) {
-          console.warn('Symbol error', t.symbol, err);
-          rows.push({ symbol: t.symbol, error: err.message });
-        }
-      }
-
-      // thresholds
-const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
-const min7dGainPct = parseFloat($('min7dGain').value) || 7;
-const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
-
-// compute 7d ranking
-const valid7d = rows.filter(r => typeof r.pct7d === "number" && !isNaN(r.pct7d));
-const sorted7d = [...valid7d].sort((a,b) => b.pct7d - a.pct7d);
-
-const tbody = document.querySelector('#results tbody');
-tbody.innerHTML = "";
-
-for (const r of rows) {
-  const signals = [];
-
-  // logic
-  if (r.pct24h >= minDailyGainPct) signals.push("High 24h gain");
-  if (r.pct7d >= min7dGainPct) signals.push("Strong 7d gain");
-
-  const rank7 = r.pct7d
-    ? sorted7d.findIndex(x => x.symbol === r.symbol) + 1
-    : null;
-
-  if (rank7 && rank7 <= Math.max(3, Math.ceil(valid7d.length * 0.3))) {
-    signals.push("Top 7d");
+  for (const s of exchangeInfo.symbols || []) {
+    if (
+      s.contractType === 'PERPETUAL' &&
+      s.symbol.endsWith('USDT') &&
+      s.status === 'TRADING'
+    ) {
+      perpetualSet.add(s.symbol);
+    }
   }
 
-  if (r.fundingRate >= fundingThreshold) signals.push("Funding +");
+  setStatus('Fetching 24h tickers ...');
+  const tickers = await get24hTickers();
+  const perps = (tickers || []).filter(t => perpetualSet.has(t.symbol));
 
-  const tr = document.createElement('tr');
-  const isEuphoric = signals.length >= 3;
+  for (const t of perps) {
+    t.priceChangePercent = parseFloat(t.priceChangePercent);
+    t.lastPrice = parseFloat(t.lastPrice);
+    t.quoteVolume = parseFloat(t.quoteVolume);
+    t.volume = parseFloat(t.volume);
+  }
 
-  if (isEuphoric) tr.classList.add("eup");
+  // Sort by 24h gain
+  perps.sort((a, b) => b.priceChangePercent - a.priceChangePercent);
+  const topGainers = perps.slice(0, Math.max(topN, 10));
 
-  tr.innerHTML = `
-    <td><div class="badge">${r.symbol}</div></td>
-    <td class="${r.pct24h >= 0 ? 'green' : 'red'}">${r.pct24h.toFixed(2)}%</td>
-    <td>${r.pct7d ? r.pct7d.toFixed(2) + '%' : 'n/a'}</td>
-    <td>${r.fundingRate.toFixed(6)}</td>
-    <td>${Number(r.openInterest).toLocaleString()}</td>
-    <td>${Number(r.volume).toLocaleString()}</td>
-    <td>
-      ${isEuphoric ? `<span class="badge eup">EUPHORIC</span>` : ""}
-      ${signals.map(s => `<span class="badge">${s}</span>`).join(" ")}
-    </td>
-  `;
+  setStatus(`Top ${topGainers.length} gainers found — fetching details ...`);
 
-  tbody.appendChild(tr);
-}
+  // Fetch details for each symbol
+  const rows = [];
 
-        
-        
-      setStatus('Scan complete — results shown. (Respect Binance rate limits; wait before re-scanning)');
+  for (let i = 0; i < topGainers.length; i++) {
+    const t = topGainers[i];
+    setStatus(`Fetching ${i + 1}/${topGainers.length} — ${t.symbol}`);
+
+    try {
+      await pauseJitter(350, 550);
+
+      // 7d klines
+      const klines = await fetchJson(
+        apiUrl(`/fapi/v1/klines?symbol=${t.symbol}&interval=1d&limit=8`)
+      );
+
+      let sevenDayPct = null;
+      if (klines && klines.length >= 2) {
+        const closeNow = parseFloat(klines[klines.length - 1][4]);
+        const close7ago = parseFloat(klines[0][4]);
+        sevenDayPct = ((closeNow / close7ago) - 1) * 100;
+      }
+
+      // Funding
+      const premium = await fetchJson(
+        apiUrl(`/fapi/v1/premiumIndex?symbol=${t.symbol}`)
+      );
+      const fundingRate = parseFloat(
+        premium.lastFundingRate ?? premium.fundingRate ?? 0
+      );
+
+      // OI
+      const oi = await fetchJson(
+        apiUrl(`/fapi/v1/openInterest?symbol=${t.symbol}`)
+      );
+      const openInterest = parseFloat(oi.openInterest || 0);
+
+      rows.push({
+        symbol: t.symbol,
+        pct24h: t.priceChangePercent,
+        pct7d: sevenDayPct,
+        fundingRate,
+        openInterest,
+        volume: t.quoteVolume
+      });
+    } catch (err) {
+      console.warn('Symbol error', t.symbol, err);
+      rows.push({
+        symbol: t.symbol,
+        error: err.message
+      });
     }
+  }
+
+  // ------- Ranking Logic -------
+  const valid7d = rows.filter(
+    r => typeof r.pct7d === 'number' && !isNaN(r.pct7d)
+  );
+
+  const sorted7d = [...valid7d].sort((a, b) => b.pct7d - a.pct7d);
+
+  // ------- Render rows ---------
+  const tbody = document.querySelector('#results tbody');
+  tbody.innerHTML = "";
+
+  for (const r of rows) {
+    const signals = [];
+
+    // Apply thresholds
+    if (r.pct24h >= minDailyGainPct) signals.push("High 24h gain");
+    if (r.pct7d >= min7dGainPct) signals.push("Strong 7d gain");
+
+    // 7d rank
+    const rank7 = r.pct7d
+      ? sorted7d.findIndex(x => x.symbol === r.symbol) + 1
+      : null;
+
+    if (rank7 && rank7 <= Math.max(3, Math.ceil(valid7d.length * 0.3))) {
+      signals.push("Top 7d");
+    }
+
+    // Funding
+    if (r.fundingRate >= fundingThreshold) {
+      signals.push("Funding +");
+    }
+
+    // Row state
+    const tr = document.createElement('tr');
+    const isEuphoric = signals.length >= 3;
+
+    if (isEuphoric) tr.classList.add("eup");
+
+    tr.innerHTML = `
+      <td><div class="badge">${r.symbol}</div></td>
+      <td class="${r.pct24h >= 0 ? "green" : "red"}">${r.pct24h.toFixed(2)}%</td>
+      <td>${r.pct7d ? r.pct7d.toFixed(2) + "%" : "n/a"}</td>
+      <td>${r.fundingRate.toFixed(6)}</td>
+      <td>${Number(r.openInterest).toLocaleString()}</td>
+      <td>${Number(r.volume).toLocaleString()}</td>
+      <td>
+        ${isEuphoric ? `<span class="badge eup">EUPHORIC</span> ` : ""}
+        ${signals.map(s => `<span class="badge">${s}</span>`).join(" ")}
+      </td>
+    `;
+
+    tbody.appendChild(tr);
+  }
+
+  setStatus("Scan complete — results shown.");
+}
 
     // run button
     runBtn.addEventListener('click', async () => {
