@@ -172,18 +172,8 @@
       return data;
     }
 
-    // core scan function
-    async function scan(){
-      // enforce global cooldown
-      const now = Date.now();
-      if (now - lastScan < SCAN_COOLDOWN_MS) {
-        const wait = Math.ceil((SCAN_COOLDOWN_MS - (now - lastScan)) / 1000);
-        setStatus(`Cooldown active — wait ${wait}s`);
-        return;
-      }
-      lastScan = now;
-
-      let autoRefresh = false;
+    // ------------------- AUTO REFRESH SYSTEM (GLOBAL) -------------------
+let autoRefresh = false;
 let autoTimer = null;
 
 function randomDelay(min = 20000, max = 35000) {
@@ -197,8 +187,8 @@ function startAutoRefresh() {
   async function loop() {
     if (!autoRefresh) return;
 
-    try {
-      await scan(); // uses cooldown internally
+    try { 
+      await scan();  // uses cooldown internally 
     } catch(e) {
       console.warn("Auto-refresh scan error:", e);
     }
@@ -214,6 +204,18 @@ function stopAutoRefresh() {
   if (autoTimer) clearTimeout(autoTimer);
   autoTimer = null;
 }
+// --------------------------------------------------------------------
+
+    // core scan function
+    async function scan(){
+      // enforce global cooldown
+      const now = Date.now();
+      if (now - lastScan < SCAN_COOLDOWN_MS) {
+        const wait = Math.ceil((SCAN_COOLDOWN_MS - (now - lastScan)) / 1000);
+        setStatus(`Cooldown active — wait ${wait}s`);
+        return;
+      }
+      lastScan = now;
 
       // read thresholds
       const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
