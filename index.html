@@ -172,7 +172,7 @@
       return data;
     }
 
-    // ---------------- SMART TOP-10 UPDATE SYSTEM ----------------
+// ---------------- SMART TOP-10 UPDATE SYSTEM ----------------
 async function updateTop10() {
   setStatus("Updating top 10…");
 
@@ -209,7 +209,7 @@ async function updateTop10() {
     for (let i = 0; i < top10.length; i++) {
       const t = top10[i];
 
-      await pauseJitter(280, 420); // safer + lighter than full scan
+      await pauseJitter(280, 420);
 
       try {
         // Funding
@@ -220,7 +220,7 @@ async function updateTop10() {
         const oi = await fetchJson(apiUrl(`/fapi/v1/openInterest?symbol=${t.symbol}`));
         const openInterest = parseFloat(oi.openInterest || 0);
 
-        // 7-day klines (light enough for top 10 only)
+        // 7-day klines
         const klines = await fetchJson(apiUrl(`/fapi/v1/klines?symbol=${t.symbol}&interval=1d&limit=8`));
         let sevenDayPct = null;
         if (klines && klines.length >= 2) {
@@ -242,12 +242,37 @@ async function updateTop10() {
       }
     }
 
-    // 6. Render into the table (ONLY update tbody)
+    // ---- Ranking Logic (same as scan) ----
+    const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
+    const min7dGainPct = parseFloat($('min7dGain').value) || 7;
+    const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
+
+    const valid7d = rows.filter(r => typeof r.pct7d === "number" && !isNaN(r.pct7d));
+    const sorted7d = [...valid7d].sort((a,b) => b.pct7d - a.pct7d);
+
+    // ---- Rendering (same as scan) ----
     const tbody = document.querySelector('#results tbody');
     tbody.innerHTML = '';
 
     for (const r of rows) {
+      const signals = [];
+
+      if (r.pct24h >= minDailyGainPct) signals.push("High 24h gain");
+      if (r.pct7d >= min7dGainPct) signals.push("Strong 7d gain");
+
+      const rank7 = r.pct7d
+        ? sorted7d.findIndex(x => x.symbol === r.symbol) + 1
+        : null;
+
+      if (rank7 && rank7 <= Math.max(3, Math.ceil(valid7d.length * 0.3))) {
+        signals.push("Top 7d");
+      }
+
+      if (r.fundingRate >= fundingThreshold) signals.push("Funding +");
+
       const tr = document.createElement('tr');
+      const isEuphoric = signals.length >= 3;
+      if (isEuphoric) tr.classList.add("eup");
 
       tr.innerHTML = `
         <td><div class="badge">${r.symbol}</div></td>
@@ -256,7 +281,10 @@ async function updateTop10() {
         <td>${r.fundingRate.toFixed(6)}</td>
         <td>${Number(r.openInterest).toLocaleString()}</td>
         <td>${Number(r.volume).toLocaleString()}</td>
-        <td><span class="badge">Updated</span></td>
+        <td>
+          ${isEuphoric ? `<span class="badge eup">EUPHORIC</span>` : ""}
+          ${signals.map(s => `<span class="badge">${s}</span>`).join(" ")}
+        </td>
       `;
 
       tbody.appendChild(tr);
@@ -268,7 +296,6 @@ async function updateTop10() {
     setStatus("Update error");
   }
 }
-// ------------------------------------------------------------
 
     // ------------------- AUTO REFRESH SYSTEM (GLOBAL) -------------------
 let autoRefreshEnabled = false;
