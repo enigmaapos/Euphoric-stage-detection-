@@ -44,6 +44,7 @@
     </label>
 
     <label><input id="useProxy" type="checkbox" /> Use CORS proxy (for testing)</label>
+    <label><input id="autoRefresh" type="checkbox" /> Auto Refresh</label>
 
     <button id="runBtn">Run scan</button>
     <div id="status" class="small" style="margin-left:12px">idle</div>
@@ -181,6 +182,38 @@
         return;
       }
       lastScan = now;
+
+      let autoRefresh = false;
+let autoTimer = null;
+
+function randomDelay(min = 20000, max = 35000) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function startAutoRefresh() {
+  if (autoRefresh) return;
+  autoRefresh = true;
+
+  async function loop() {
+    if (!autoRefresh) return;
+
+    try {
+      await scan(); // uses cooldown internally
+    } catch(e) {
+      console.warn("Auto-refresh scan error:", e);
+    }
+
+    autoTimer = setTimeout(loop, randomDelay());
+  }
+
+  loop();
+}
+
+function stopAutoRefresh() {
+  autoRefresh = false;
+  if (autoTimer) clearTimeout(autoTimer);
+  autoTimer = null;
+}
 
       // read thresholds
       const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
@@ -332,6 +365,16 @@
         runBtn.disabled = false;
       }
     });
+
+    $('autoRefresh').addEventListener('change', e => {
+  if (e.target.checked) {
+    startAutoRefresh();
+    setStatus('Auto-refresh enabled');
+  } else {
+    stopAutoRefresh();
+    setStatus('Auto-refresh disabled');
+  }
+});
 
     // optional: auto-run once after load (commented)
     // (async()=>{ await scan(); })();
