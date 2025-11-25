@@ -381,67 +381,58 @@ function stopAutoRefresh() {
         }
       }
 
-      // compute 7d ranking among results
-      const valid7d = rows.filter(r => typeof r.pct7d === 'number' && !isNaN(r.pct7d));
-      const sorted7d = [...valid7d].sort((a,b) => b.pct7d - a.pct7d);
+      // thresholds
+const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
+const min7dGainPct = parseFloat($('min7dGain').value) || 7;
+const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
 
-      // render
-      resultsTbody.innerHTML = '';
-      for (const r of rows) {
-        const tr = document.createElement('tr');
+// compute 7d ranking
+const valid7d = rows.filter(r => typeof r.pct7d === "number" && !isNaN(r.pct7d));
+const sorted7d = [...valid7d].sort((a,b) => b.pct7d - a.pct7d);
 
-        const symTd = document.createElement('td');
-        symTd.innerHTML = `<div style="display:flex;gap:8px;align-items:center">
-          <div class="badge">${r.symbol}</div>
-          ${r.error ? `<div class="small" style="color:#ffa">Error: ${r.error}</div>` : ''}
-          </div>`;
-        tr.appendChild(symTd);
+const tbody = document.querySelector('#results tbody');
+tbody.innerHTML = "";
 
-        const pct24Td = document.createElement('td');
-        pct24Td.textContent = (typeof r.pct24h === 'number' ? r.pct24h.toFixed(2) + '%' : 'n/a');
-        pct24Td.className = (typeof r.pct24h === 'number' && r.pct24h > 0) ? 'green' : 'red';
-        tr.appendChild(pct24Td);
+for (const r of rows) {
+  const signals = [];
 
-        const pct7Td = document.createElement('td');
-        pct7Td.textContent = (typeof r.pct7d === 'number' ? r.pct7d.toFixed(2) + '%' : 'n/a');
-        tr.appendChild(pct7Td);
+  // logic
+  if (r.pct24h >= minDailyGainPct) signals.push("High 24h gain");
+  if (r.pct7d >= min7dGainPct) signals.push("Strong 7d gain");
 
-        const fundTd = document.createElement('td');
-        fundTd.textContent = (typeof r.fundingRate === 'number' ? Number(r.fundingRate).toFixed(6) : 'n/a');
-        tr.appendChild(fundTd);
+  const rank7 = r.pct7d
+    ? sorted7d.findIndex(x => x.symbol === r.symbol) + 1
+    : null;
 
-        const oiTd = document.createElement('td');
-        oiTd.textContent = (typeof r.openInterest === 'number' ? Number(r.openInterest).toLocaleString() : 'n/a');
-        tr.appendChild(oiTd);
+  if (rank7 && rank7 <= Math.max(3, Math.ceil(valid7d.length * 0.3))) {
+    signals.push("Top 7d");
+  }
 
-        const volTd = document.createElement('td');
-        volTd.textContent = (r.volume ? Number(r.volume).toLocaleString() : 'n/a');
-        tr.appendChild(volTd);
+  if (r.fundingRate >= fundingThreshold) signals.push("Funding +");
 
-        // signals
-        const signals = [];
-        const minDailyGainPct = parseFloat($('minDailyGain').value) || 3;
-        const min7dGainPct = parseFloat($('min7dGain').value) || 7;
-        const fundingThreshold = parseFloat($('fundingThreshold').value) || 0.001;
+  const tr = document.createElement('tr');
+  const isEuphoric = signals.length >= 3;
 
-        if (typeof r.pct24h === 'number' && r.pct24h >= minDailyGainPct) signals.push('High 24h gain');
-        if (typeof r.pct7d === 'number' && r.pct7d >= min7dGainPct) signals.push('Strong 7d gain');
-        const rank7 = r.pct7d ? (sorted7d.findIndex(x => x.symbol === r.symbol) + 1) : null;
-        if (rank7 && rank7 <= Math.max(3, Math.ceil(valid7d.length * 0.3))) signals.push('Top 7d');
-        if (typeof r.fundingRate === 'number' && r.fundingRate >= fundingThreshold) signals.push('Funding +');
+  if (isEuphoric) tr.classList.add("eup");
 
-        const sigTd = document.createElement('td');
-        sigTd.innerHTML = signals.length ? signals.map(s=>`<span class="badge">${s}</span>`).join(' ') : '<span class="small">—</span>';
-        tr.appendChild(sigTd);
+  tr.innerHTML = `
+    <td><div class="badge">${r.symbol}</div></td>
+    <td class="${r.pct24h >= 0 ? 'green' : 'red'}">${r.pct24h.toFixed(2)}%</td>
+    <td>${r.pct7d ? r.pct7d.toFixed(2) + '%' : 'n/a'}</td>
+    <td>${r.fundingRate.toFixed(6)}</td>
+    <td>${Number(r.openInterest).toLocaleString()}</td>
+    <td>${Number(r.volume).toLocaleString()}</td>
+    <td>
+      ${isEuphoric ? `<span class="badge eup">EUPHORIC</span>` : ""}
+      ${signals.map(s => `<span class="badge">${s}</span>`).join(" ")}
+    </td>
+  `;
 
-        if (signals.length >= 3) {
-          tr.classList.add('eup');
-          sigTd.innerHTML = `<span class="badge eup">EUPHORIC</span> ` + sigTd.innerHTML;
-        }
+  tbody.appendChild(tr);
+}
 
-        resultsTbody.appendChild(tr);
-      }
-
+        
+        
       setStatus('Scan complete — results shown. (Respect Binance rate limits; wait before re-scanning)');
     }
 
